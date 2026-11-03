@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voice</title>
+<style>
+  :root { --card: #2a2a2a; --fg: #e8e8e8; --dim: #9a9a9a; --red: #e5484d; --green: #2f9e44; --accent: #f5a623; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; font-family: 'Segoe UI', system-ui, sans-serif; background: transparent; color: var(--fg); font-size: 14px; }
+  .card { background: var(--card); border-radius: 12px; padding: 14px; }
+  h1 { font-size: 14px; margin: 0 0 10px; font-weight: 600; }
+  button { font: inherit; border: none; border-radius: 8px; padding: 9px 13px; cursor: pointer; background: #3a3a3a; color: var(--fg); }
+  button:hover { opacity: .85; } button:disabled { opacity: .4; cursor: default; }
+  #micBtn { width: 100%; font-size: 14px; font-weight: 600; padding: 13px; background: var(--red); color: #fff; }
+  #micBtn.on { background: #a12020; }
+  #state { margin-top: 9px; display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 12.5px; height: 18px; }
+  #state.rec { color: var(--red); font-weight: 600; }
+  #wave { display: none; flex: 1 1 auto; height: 16px; min-width: 0; }
+  #stateText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #bar { height: 5px; background: #1f1f1f; border-radius: 3px; margin-top: 8px; }
+  #bar > div { height: 100%; width: 0%; background: var(--accent); border-radius: 3px; transition: width .25s linear; }
+  #resultBox { margin-top: 10px; }
+  textarea { width: 100%; min-height: 110px; resize: vertical; padding: 9px; border-radius: 8px; border: 1px solid #444; background: #1f1f1f; color: var(--fg); font: inherit; line-height: 1.45; }
+  textarea:focus { outline: 1px solid var(--accent); }
+  .row { display: flex; gap: 8px; margin-top: 8px; } .row button { flex: 1; }
+  #copyBtn { background: #3574f0; color: #fff; }
+  #chatBtn { background: var(--green); color: #fff; font-weight: 600; }
+  #clearBtn { background: #b8504c; color: #fff; }
+  #errBox { display: none; margin-top: 9px; color: #ffb4b4; font-size: 12.5px; line-height: 1.5; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎙 Голосовой ввод</h1>
+    <button id="micBtn">● Записать</button>
+    <div id="bar"><div></div></div>
+    <div id="state"><span id="stateText"></span><canvas id="wave"></canvas></div>
+    <div id="errBox"></div>
+    <div id="resultBox">
+      <textarea id="text" spellcheck="false" placeholder="Распознанный текст появляется здесь; новые записи дописываются к нему"></textarea>
+      <div class="row">
+        <button id="copyBtn">⧉ Копировать</button>
+        <button id="chatBtn">⤴ В чат</button>
+        <button id="clearBtn">✕ Очистить</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+'use strict';
+// ============ MCP App bridge ============
+let nextId = 1;
+const pending = new Map();
+let connected = false;
+
+function post(msg) { window.parent.postMessage(msg, '*'); }
+function request(method, params) {
+  return new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, { resolve, reject });
+    post({ jsonrpc: '2.0', id, method, params });
+    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('таймаут: ' + method)); } }, 600000);
+  });
+}
+const callTool = (name, args) => request('tools/call', { name, arguments: args || {} });
+// при потере связи (рестарт сервера) панель сама переподключается и перезагружается на свежем коде
+let reconnecting = false;
+function scheduleReconnect() {
+  if (reconnecting) return;
+  reconnecting = true;
+  (async () => {
+    for (let i = 0; i < 15; i++) {
+      try { await connect(); reconnecting = false; location.reload(); return; } catch { }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    reconnecting = false;
+    err('Нет связи с хостом — переоткройте вкладку');
+  })();
+}
+
+window.addEventListener('message', (ev) => {
+  const msg = ev.data;
+  if (!msg || msg.jsonrpc !== '2.0') return;
+  if (msg.id != null && pending.has(msg.id)) {
+    const p = pending.get(msg.id);
+    pending.delete(msg.id);
+    if (msg.error) p.reject(new Error(msg.error.message || 'ошибка хоста'));
+    else p.resolve(msg.result);
+  }
+});
+
+async function connect() {
+  await request('ui/initialize', {
+    protocolVersion: '2025-06-18',
+    appInfo: { name: 'zcode-voice', version: '0.6.0' },
+    appCapabilities: {},
+  });
+  post({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+  connected = true;
+}
+
+// ============ UI ============
+const $ = (id) => document.getElementById(id);
+const micBtn = $('micBtn'), copyBtn = $('copyBtn'), chatBtn = $('chatBtn'), clearBtn = $('clearBtn'), stateEl = $('state'), stateText = $('stateText'), errBox = $('errBox'), barEl = $('bar'), waveEl = $('wave');
+let recording = false, swStart = 0, uiTimer = null;
+
+function say(msg, rec) { stateText.textContent = msg; stateEl.classList.toggle('rec', !!rec); }
+function err(msg) { errBox.style.display = 'block'; errBox.textContent = '✗ ' + msg; }
+function errClear() { errBox.style.display = 'none'; }
+function setBtn(text, enabled, active) {
+  micBtn.textContent = text;
+  micBtn.disabled = !enabled;
+  micBtn.classList.toggle('on', active);
+}
+// копировать/в чат/очистить недоступны, пока идёт цикл записи - защита текста
+function setRowEnabled(on) { copyBtn.disabled = chatBtn.disabled = clearBtn.disabled = !on; }
+// фейковый прогресс: плавно к toPct% за ms (старт микрофона / сохранение)
+let barTimer = null;
+function fakeBar(toPct, ms) {
+  clearInterval(barTimer);
+  const el = barEl.firstElementChild;
+  el.style.transition = 'none';
+  el.style.width = '0%';
+  const t0 = Date.now();
+  barTimer = setInterval(() => {
+    const t = Math.min(1, (Date.now() - t0) / ms);
+    const eased = t * (2 - t);
+    el.style.width = (eased * toPct) + '%';
+    if (t >= 1) clearInterval(barTimer);
+  }, 60);
+}
+function barPct(p) {
+  clearInterval(barTimer);
+  const el = barEl.firstElementChild;
+  el.style.transition = 'width .25s linear';
+  el.style.width = p + '%';
+}
+function barColor(c) { barEl.firstElementChild.style.background = c; }
+
+// живая волна уровня микрофона: панель опрашивает voice_level (фолбэк - voice_status)
+const waveHist = [];
+let levelTimer = null, levelEma = 0, waveCtx = null;
+function startWave() {
+  waveCtx = waveEl.getContext('2d');
+  waveEl.style.display = 'block';
+  waveHist.length = 0; levelEma = 0;
+  levelTimer = setInterval(async () => {
+    try {
+      let d;
+      try { d = extract(await callTool('voice_level', {})); }
+      catch { d = extract(await callTool('voice_status', {})); }
+      const rms = typeof d.rms === 'number' ? d.rms : 0;
+      // логарифмическая шкала (как VU-метр), 0 дБFS = полный масштаб s16 (32767);
+      // диапазон -48..0 дБ + гамма 0.6: голос отображается заметно выше
+      const dbfs = 20 * Math.log10(Math.max(rms, 1) / 32767);
+      let v = Math.max(0, Math.min(1, (dbfs + 48) / 48));
+      v = Math.pow(v, 0.6);
+      levelEma = v > levelEma ? levelEma + (v - levelEma) * 0.8 : levelEma + (v - levelEma) * 0.25;
+      waveHist.push(levelEma);
+      if (waveHist.length > 70) waveHist.shift();
+      drawWave();
+    } catch { }
+  }, 180);
+}
+function drawWave() {
+  if (!waveCtx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const W = waveEl.clientWidth, H = waveEl.clientHeight;
+  if (!W || !H) return;
+  if (waveEl.width !== Math.round(W * dpr) || waveEl.height !== Math.round(H * dpr)) {
+    waveEl.width = Math.round(W * dpr);
+    waveEl.height = Math.round(H * dpr);
+    waveCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  waveCtx.clearRect(0, 0, W, H);
+  waveCtx.fillStyle = '#e5484d';
+  const n = 70, step = W / n;
+  for (let i = 0; i < waveHist.length; i++) {
+    const v = waveHist[waveHist.length - 1 - i];
+    const h = Math.max(1.5, v * (H - 2));
+    waveCtx.fillRect(W - (i + 1) * step, (H - h) / 2, Math.max(1, step - 1), h);
+  }
+}
+function stopWave() { clearInterval(levelTimer); levelTimer = null; waveEl.style.display = 'none'; }
+function fmt(sec) { return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'); }
+function extract(res) {
+  try { if (res.structuredContent) return res.structuredContent; return JSON.parse(res.content[0].text); }
+  catch { return {}; }
+}
+
+// ============ сценарий: запись на серверной части ============
+async function beginDictation() {
+  if (recording || !connected) { if (!connected) err('Нет связи с хостом — переоткройте панель'); return; }
+  errClear();
+  recording = true;
+  setBtn('● Запускаю микрофон…', false, true);
+  setRowEnabled(false);
+  swStart = Date.now();
+  say('');
+  barColor('#e5484d'); // старт микрофона — красная полоса
+  fakeBar(90, 1400); // фейковый прогресс старта микрофона (~1.4 с)
+  try {
+    await callTool('voice_record_start', {});
+  } catch (e) {
+    recording = false;
+    setBtn('● Записать', true, false);
+    setRowEnabled(true);
+    barPct(0);
+    say('');
+    err(e.message + ' — если движок не установлен, попросите агента выполнить voice_setup');
+    return;
+  }
+  setBtn('■ Остановить запись', true, true);
+  barColor('var(--accent)'); // запись — жёлтая полоса
+  barPct(0);
+  startWave();
+  uiTimer = setInterval(() => {
+    const sec = Math.floor((Date.now() - swStart) / 1000);
+    say('● ' + fmt(sec), true);
+    barEl.firstElementChild.style.width = Math.min(100, ((Date.now() - swStart) / 180000) * 100) + '%';
+  }, 200);
+}
+
+async function endDictation(discard) {
+  if (!recording) return;
+  recording = false;
+  clearInterval(uiTimer); uiTimer = null;
+  stopWave();
+  setBtn('● Транскрибация…', false, false);
+  const recSec = Math.floor((Date.now() - swStart) / 1000);
+  say('');
+  // фейковый прогресс транскрибации: ~0.25 c на секунду аудио, минимум 1.2 c
+  barColor('var(--green)'); // транскрибация — зелёная полоса
+  fakeBar(100, Math.max(1200, recSec * 250));
+  try {
+    const res = await callTool('voice_record_stop', {});
+    const data = extract(res);
+    if (discard) { barPct(0); say(''); }
+    else if (data && typeof data.text === 'string' && data.text.length > 0) {
+      const ta = $('text');
+      // новые записи дописываются к существующему тексту
+      const sep = ta.value.length > 0 && !/\s$/.test(ta.value) ? ' ' : '';
+      ta.value = ta.value + sep + data.text;
+      barPct(100);
+      setTimeout(() => barPct(0), 500);
+      $('resultBox').style.display = 'block';
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      ta.scrollTop = ta.scrollHeight; // просто подводим скролл к свежему тексту
+    } else {
+      barPct(0);
+      err('Пусто — микрофон не подал сигнал');
+    }
+  } catch (e) {
+    barPct(0);
+    say('');
+    err(e.message);
+  } finally {
+    setBtn('● Записать', true, false);
+    setRowEnabled(true);
+  }
+}
+
+// отмена записи по Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && recording) endDictation(true);
+});
+
+micBtn.addEventListener('click', () => { if (!recording) beginDictation(); else endDictation(false); });
+
+$('copyBtn').addEventListener('click', async () => {
+  const text = $('text').value;
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch {
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+  }
+  if (!ok) err('Не удалось скопировать');
+});
+
+$('clearBtn').addEventListener('click', () => { $('text').value = ''; });
+
+// «В чат»: отправка текста как сообщения пользователя через ui/message
+// (хост показывает модалку подтверждения - это его защита, обойти нельзя)
+chatBtn.addEventListener('click', async () => {
+  const text = $('text').value.trim();
+  if (!text) { err('Поле пустое — нечего отправлять в чат'); return; }
+  chatBtn.disabled = true;
+  try {
+    await request('ui/message', { role: 'user', content: [{ type: 'text', text }] });
+    $('text').value = ''; // сообщение ушло в чат - освобождаем поле
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    if (!/отмен|cancel|dismiss|отклон/i.test(msg)) err('Не удалось отправить: ' + msg);
+  } finally {
+    chatBtn.disabled = recording; // разблокировать, если цикл записи не идёт
+  }
+});
+
+// стартовое подключение; неудача - в цикл переподключения
+(async () => {
+  try { await connect(); } catch { scheduleReconnect(); }
+})();
+</script>
+</body>
+</html>
