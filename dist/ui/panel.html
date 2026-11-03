@@ -32,17 +32,17 @@
 </head>
 <body>
   <div class="card">
-    <h1>🎙 Голосовой ввод</h1>
-    <button id="micBtn">● Записать</button>
+    <h1>🎙 Voice Input</h1>
+    <button id="micBtn">● Record</button>
     <div id="bar"><div></div></div>
     <div id="state"><span id="stateText"></span><canvas id="wave"></canvas></div>
     <div id="errBox"></div>
     <div id="resultBox">
-      <textarea id="text" spellcheck="false" placeholder="Распознанный текст появляется здесь; новые записи дописываются к нему"></textarea>
+      <textarea id="text" spellcheck="false" placeholder="Recognized text appears here; new recordings are appended"></textarea>
       <div class="row">
-        <button id="copyBtn">⧉ Копировать</button>
-        <button id="chatBtn">⤴ В чат</button>
-        <button id="clearBtn">✕ Очистить</button>
+        <button id="copyBtn">⧉ Copy</button>
+        <button id="chatBtn">⤴ To chat</button>
+        <button id="clearBtn">✕ Clear</button>
       </div>
     </div>
   </div>
@@ -60,7 +60,7 @@ function request(method, params) {
     const id = nextId++;
     pending.set(id, { resolve, reject });
     post({ jsonrpc: '2.0', id, method, params });
-    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('таймаут: ' + method)); } }, 600000);
+    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error('timeout: ' + method)); } }, 600000);
   });
 }
 const callTool = (name, args) => request('tools/call', { name, arguments: args || {} });
@@ -75,7 +75,7 @@ function scheduleReconnect() {
       await new Promise((r) => setTimeout(r, 2000));
     }
     reconnecting = false;
-    err('Нет связи с хостом — переоткройте вкладку');
+    err('No host connection — reopen the tab');
   })();
 }
 
@@ -85,7 +85,7 @@ window.addEventListener('message', (ev) => {
   if (msg.id != null && pending.has(msg.id)) {
     const p = pending.get(msg.id);
     pending.delete(msg.id);
-    if (msg.error) p.reject(new Error(msg.error.message || 'ошибка хоста'));
+    if (msg.error) p.reject(new Error(msg.error.message || 'host error'));
     else p.resolve(msg.result);
   }
 });
@@ -191,10 +191,10 @@ function extract(res) {
 
 // ============ сценарий: запись на серверной части ============
 async function beginDictation() {
-  if (recording || !connected) { if (!connected) err('Нет связи с хостом — переоткройте панель'); return; }
+  if (recording || !connected) { if (!connected) say('No host connection — reopen the panel'); return; }
   errClear();
   recording = true;
-  setBtn('● Запускаю микрофон…', false, true);
+  setBtn('● Starting microphone…', false, true);
   setRowEnabled(false);
   swStart = Date.now();
   say('');
@@ -204,14 +204,14 @@ async function beginDictation() {
     await callTool('voice_record_start', {});
   } catch (e) {
     recording = false;
-    setBtn('● Записать', true, false);
+    setBtn('● Record', true, false);
     setRowEnabled(true);
     barPct(0);
     say('');
-    err(e.message + ' — если движок не установлен, попросите агента выполнить voice_setup');
+    err(e.message + ' — if the engine is not installed, ask the agent to run voice_setup');
     return;
   }
-  setBtn('■ Остановить запись', true, true);
+  setBtn('■ Stop recording', true, true);
   barColor('var(--accent)'); // запись — жёлтая полоса
   barPct(0);
   startWave();
@@ -227,7 +227,7 @@ async function endDictation(discard) {
   recording = false;
   clearInterval(uiTimer); uiTimer = null;
   stopWave();
-  setBtn('● Транскрибация…', false, false);
+  setBtn('● Transcribing…', false, false);
   const recSec = Math.floor((Date.now() - swStart) / 1000);
   say('');
   // фейковый прогресс транскрибации: ~0.25 c на секунду аудио, минимум 1.2 c
@@ -250,14 +250,14 @@ async function endDictation(discard) {
       ta.scrollTop = ta.scrollHeight; // просто подводим скролл к свежему тексту
     } else {
       barPct(0);
-      err('Пусто — микрофон не подал сигнал');
+      err('Empty — the microphone produced no signal');
     }
   } catch (e) {
     barPct(0);
     say('');
     err(e.message);
   } finally {
-    setBtn('● Записать', true, false);
+    setBtn('● Record', true, false);
     setRowEnabled(true);
   }
 }
@@ -279,7 +279,7 @@ $('copyBtn').addEventListener('click', async () => {
     try { ok = document.execCommand('copy'); } catch { ok = false; }
     ta.remove();
   }
-  if (!ok) err('Не удалось скопировать');
+  if (!ok) err('Copy failed');
 });
 
 $('clearBtn').addEventListener('click', () => { $('text').value = ''; });
@@ -288,14 +288,14 @@ $('clearBtn').addEventListener('click', () => { $('text').value = ''; });
 // (хост показывает модалку подтверждения - это его защита, обойти нельзя)
 chatBtn.addEventListener('click', async () => {
   const text = $('text').value.trim();
-  if (!text) { err('Поле пустое — нечего отправлять в чат'); return; }
+  if (!text) { err('Field is empty — nothing to send'); return; }
   chatBtn.disabled = true;
   try {
     await request('ui/message', { role: 'user', content: [{ type: 'text', text }] });
     $('text').value = ''; // сообщение ушло в чат - освобождаем поле
   } catch (e) {
     const msg = e && e.message ? e.message : String(e);
-    if (!/отмен|cancel|dismiss|отклон/i.test(msg)) err('Не удалось отправить: ' + msg);
+    if (!/отмен|cancel|dismiss|отклон/i.test(msg)) err('Failed to send: ' + msg);
   } finally {
     chatBtn.disabled = recording; // разблокировать, если цикл записи не идёт
   }

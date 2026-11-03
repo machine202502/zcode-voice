@@ -1,5 +1,5 @@
-// zcode-voice MCP server (v0.6): запись ведёт СЕРВЕРНАЯ часть плагина (ffmpeg, dshow),
-// панель Voice — только UI. Распознавание: sherpa-onnx-offline (GigaAM v3), локально.
+// zcode-voice MCP server: recording runs in the PLUGIN BACKEND (ffmpeg, dshow),
+// the Voice panel is UI only. Recognition: sherpa-onnx-offline (GigaAM v3), fully local.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -48,11 +48,11 @@ function spawnRun(cmd, args) {
 async function download(url, out, expectSha) {
   mkdirSync(dirname(out), { recursive: true });
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status} для ${url}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   const buf = Buffer.from(await res.arrayBuffer());
   if (expectSha) {
     const got = createHash('sha256').update(buf).digest('hex');
-    if (got !== expectSha) throw new Error(`SHA-256 не совпал: ${got}`);
+    if (got !== expectSha) throw new Error(`SHA-256 mismatch: ${got}`);
   }
   writeFileSync(out, buf);
   return buf.length;
@@ -78,7 +78,7 @@ async function ensureEngine() {
   };
   walk(extract);
   try { rmSync(archive, { force: true }); rmSync(extract, { recursive: true, force: true }); } catch { }
-  if (!existsSync(enginePath())) throw new Error('в архиве нет sherpa-onnx-offline');
+  if (!existsSync(enginePath())) throw new Error('sherpa-onnx-offline not found in the archive');
 }
 
 async function ensureModel() {
@@ -107,8 +107,8 @@ function tidy(text) {
 }
 
 async function transcribeFile(wav) {
-  if (!existsSync(wav)) throw new Error(`файл не найден: ${wav}`);
-  if (!existsSync(enginePath())) throw new Error('движок не установлен - вызовите voice_setup');
+  if (!existsSync(wav)) throw new Error(`file not found: ${wav}`);
+  if (!existsSync(enginePath())) throw new Error('engine is not installed - run voice_setup');
   const { out } = await spawnRun(enginePath(), [
     `--nemo-ctc-model=${modelPath()}`, `--tokens=${tokensPath()}`, '--num-threads=2', wav,
   ]);
@@ -138,7 +138,7 @@ async function findFfmpeg() {
 async function ensureFfmpeg() {
   const found = await findFfmpeg();
   if (found) return found;
-  if (!IS_WIN) throw new Error('ffmpeg не найден. Установите ffmpeg (brew install ffmpeg / apt install ffmpeg) и повторите.');
+  if (!IS_WIN) throw new Error('ffmpeg not found. Install ffmpeg (brew install ffmpeg / apt install ffmpeg) and try again.');
   // статическая сборка (один раз), достаём ffmpeg.exe
   const zip = join(dataRoot(), 'ffmpeg.zip');
   const extract = join(dataRoot(), '.ffmpeg-extract');
@@ -155,7 +155,7 @@ async function ensureFfmpeg() {
     }
   };
   walk(extract);
-  if (!exe) throw new Error('в архиве ffmpeg.exe не найден');
+  if (!exe) throw new Error('ffmpeg.exe not found in the archive');
   mkdirSync(join(dataRoot(), 'bin'), { recursive: true });
   writeFileSync(join(dataRoot(), 'bin', 'ffmpeg.exe'), readFileSync(exe));
   try { rmSync(zip, { force: true }); rmSync(extract, { recursive: true, force: true }); } catch { }
@@ -180,7 +180,7 @@ async function pickMic() {
   const names = [...section.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   const mic = names.find((n) => /микрофон|microphone|micro/i.test(n)) || names[0];
   if (!mic) {
-    throw new Error('DirectShow не видит аудиовход: микрофон отсутствует, отключён или не проброшен в систему (ВМ). Проверьте Параметры -> Звук -> Ввод.');
+    throw new Error('DirectShow sees no audio input: the microphone is missing, disabled, or not passed through to the system (VM). Check Settings -> Sound -> Input.');
   }
   micDevice = mic;
   return mic;
@@ -193,7 +193,7 @@ const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function recordStart() {
   if (rec) return { already: true, startedAt: rec.startedAt };
-  if (!IS_WIN) throw new Error('серверная запись поддержана на Windows (ffmpeg dshow)');
+  if (!IS_WIN) throw new Error('server-side recording is supported on Windows (ffmpeg dshow)');
   const ffmpeg = await ensureFfmpeg();
   const dir = join(dataRoot(), 'recordings');
   mkdirSync(dir, { recursive: true });
@@ -240,7 +240,7 @@ async function recordStart() {
       micDevice = null; // переопределить устройство на следующей попытке
       await sleepMs(400);
     }
-    throw new Error(`микрофон "${lastDevice}" не начал передачу: занят другим приложением или недоступен. Закройте программы, использующие микрофон, и попробуйте снова.`);
+    throw new Error(`microphone "${lastDevice}" did not start streaming: busy or unavailable. Close other apps using the microphone and try again.`);
   } catch (e) {
     if (session.child) { try { session.child.kill('SIGKILL'); } catch { } }
     if (rec === session) rec = null;
@@ -250,7 +250,7 @@ async function recordStart() {
 
 function wrapWav(rawPath, wavPath) {
   const dataLen = statSync(rawPath).size;
-  if (dataLen < 3200) throw new Error('запись пустая - микрофон не подал сигнал');
+  if (dataLen < 3200) throw new Error('recording is empty - the microphone produced no signal');
   const head = Buffer.alloc(44);
   head.write('RIFF', 0); head.writeUInt32LE(dataLen + 36, 4);
   head.write('WAVE', 8); head.write('fmt ', 12);
@@ -263,8 +263,8 @@ function wrapWav(rawPath, wavPath) {
 }
 
 async function stopRecording() {
-  if (rec && !rec.child) throw new Error('запись ещё запускается, секунду…');
-  if (!rec || !rec.child) { rec = null; throw new Error('запись не идёт'); }
+  if (rec && !rec.child) throw new Error('recording is still starting, one moment…');
+  if (!rec || !rec.child) { rec = null; throw new Error('no recording in progress'); }
   const session = rec;
   rec = null;
   session.manualStop = true;
@@ -312,13 +312,13 @@ function tailRms(path, bytes) {
 async function recordAuto() {
   await recordStart();
   const session = rec;
-  if (!session || !session.child) throw new Error('запись не началась');
+  if (!session || !session.child) throw new Error('recording did not start');
   const startedAt = Date.now();
   let baseline = -1, threshold = 0, speechSeen = false, lastSpeechAt = 0, lastSize = 0;
   try {
     while (true) {
       await sleepMs(250);
-      if (rec !== session) throw new Error('запись остановлена вручную');
+      if (rec !== session) throw new Error('recording was stopped manually');
       let size = 0;
       try { size = statSync(session.raw).size; } catch { }
       if (size > lastSize) {
@@ -338,7 +338,7 @@ async function recordAuto() {
       if (speechSeen && Date.now() - lastSpeechAt >= 1500) break;
       if (!speechSeen && elapsed >= 8) {
         await cancelRecording();
-        throw new Error('речь не обнаружена за 8с. Проверьте микрофон (уровень/заглушен) и повторите /voice.');
+        throw new Error('no speech detected within 8s. Check the microphone (level/muted) and try /voice again.');
       }
       if (elapsed >= MAX_RECORD_SEC) break;
     }
@@ -353,42 +353,42 @@ async function recordAuto() {
 const TOOLS = [
   {
     name: 'voice_setup',
-    description: 'Установить/восстановить zcode-voice: скачать движок sherpa-onnx и модель GigaAM v3 (~224 МБ, один раз), при отсутствии ffmpeg - его. После установки панель Voice готова к записи.',
+    description: 'Install/repair zcode-voice: download the sherpa-onnx engine and the GigaAM v3 model (~224 MB, once), plus ffmpeg if missing. After setup the Voice panel is ready to record.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'voice_record_start',
-    description: 'Начать запись с микрофона на серверной части плагина (ffmpeg dshow). Возвращает {started}. Остановить - voice_record_stop. Служебный инструмент панели Voice; без запроса пользователя не вызывать.',
+    description: 'Start microphone recording in the plugin backend (ffmpeg dshow). Returns {started}. Stop with voice_record_stop. Voice panel service tool; do not call without a user request.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'voice_record',
-    description: 'Записать речь с микрофона и распознать по-русски (GigaAM v3, локально). Блокируется до конца фразы: сам останавливается после 1.5 с тишины (максимум 180 с; если речи нет 8 с - ошибка). Возвращает {text, seconds, wav}. Использовать для голосовой диктовки по запросу пользователя.',
+    description: 'Record microphone speech and transcribe it (GigaAM v3, local; Russian-oriented model). Blocks until the phrase ends: stops automatically after 1.5 s of silence (max 180 s; errors if no speech within 8 s). Returns {text, seconds, wav}. Use for voice dictation on user request.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'voice_level',
-    description: 'Текущий уровень сигнала активной записи (rms 0..~10000). Служебный инструмент панели Voice для индикации громкости.',
+    description: 'Current input level of the active recording (rms 0..~10000). Voice panel service tool for the level indicator.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'voice_record_stop',
-    description: 'Остановить запись и распознать по-русски (GigaAM v3). Возвращает {text}. Служебный инструмент панели Voice.',
+    description: 'Stop the recording and transcribe it (GigaAM v3). Returns {text}. Voice panel service tool.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'voice_transcribe',
-    description: 'Распознать готовый PCM WAV-файл (16 кГц моно лучше всего) по-русски локально (GigaAM v3). Возвращает текст.',
-    inputSchema: { type: 'object', properties: { wav: { type: 'string', description: 'Путь к wav-файлу' } }, required: ['wav'] },
+    description: 'Transcribe a ready PCM WAV file (16 kHz mono works best) locally (GigaAM v3). Returns the text.',
+    inputSchema: { type: 'object', properties: { wav: { type: 'string', description: 'Path to a wav file' } }, required: ['wav'] },
   },
   {
     name: 'voice_log_ui',
-    description: 'Служебный: запись результата пробы ui-моста в лог (ui-probe.log).',
-    inputSchema: { type: 'object', properties: { data: { type: 'string', description: 'Строка для лога' } }, required: ['data'] },
+    description: 'Service: append a ui-bridge probe result to the log (ui-probe.log).',
+    inputSchema: { type: 'object', properties: { data: { type: 'string', description: 'Log line' } }, required: ['data'] },
   },
   {
     name: 'voice_status',
-    description: 'Диагностика zcode-voice: движок, модель, ffmpeg, активная запись.',
+    description: 'zcode-voice diagnostics: engine, model, ffmpeg, active recording.',
     inputSchema: { type: 'object', properties: {} },
   },
 ];
@@ -412,15 +412,15 @@ async function callTool(name, args) {
   if (name === 'voice_status') {
     return {
       dataRoot: dataRoot(),
-      engine: existsSync(enginePath()) ? 'ok' : 'отсутствует (voice_setup)',
-      model: existsSync(modelPath()) ? 'ok' : 'отсутствует (voice_setup)',
-      ffmpeg: (await findFfmpeg().catch(() => null)) ? 'ok' : 'будет скачан при первой записи',
-      recording: rec && rec.child ? 'идёт' : 'нет',
+      engine: existsSync(enginePath()) ? 'ok' : 'missing (voice_setup)',
+      model: existsSync(modelPath()) ? 'ok' : 'missing (voice_setup)',
+      ffmpeg: (await findFfmpeg().catch(() => null)) ? 'ok' : 'will be downloaded on first recording',
+      recording: rec && rec.child ? 'active' : 'idle',
       rms: rec && rec.child ? tailRms(rec.raw, 6400) : 0,
       panel: 'New tab -> App plugins -> Voice',
     };
   }
-  throw new Error('неизвестный инструмент: ' + name);
+  throw new Error('unknown tool: ' + name);
 }
 
 // --- JSON-RPC over stdio (MCP, newline-delimited) ---
@@ -434,7 +434,7 @@ createInterface({ input: process.stdin, terminal: false }).on('line', (line) => 
       reply(id, {
         protocolVersion: (params && params.protocolVersion) || '2025-06-18',
         capabilities: { tools: {}, resources: {} },
-        serverInfo: { name: 'zcode-voice', version: '1.0.0' },
+        serverInfo: { name: 'zcode-voice', version: '1.0.1' },
       });
       break;
     case 'notifications/initialized':
@@ -457,7 +457,7 @@ createInterface({ input: process.stdin, terminal: false }).on('line', (line) => 
           text: readFileSync(PANEL_HTML, 'utf8'),
           _meta: { ui: { resourceUri: uri } },
         }] });
-      } else replyErr(id, -32602, 'неизвестный ресурс: ' + uri);
+      } else replyErr(id, -32602, 'unknown resource: ' + uri);
       break;
     }
     case 'tools/list':
@@ -465,19 +465,19 @@ createInterface({ input: process.stdin, terminal: false }).on('line', (line) => 
       break;
     case 'tools/call': {
       const name = params && params.name;
-      if (!TOOL_NAMES.has(name)) { replyErr(id, -32602, 'нет инструмента: ' + name); break; }
+      if (!TOOL_NAMES.has(name)) { replyErr(id, -32602, 'no such tool: ' + name); break; }
       const token = params && params._meta && params._meta.progressToken;
-      if (token != null) notify('notifications/progress', { progressToken: token, progress: 0, total: 1, message: 'выполняю…' });
+      if (token != null) notify('notifications/progress', { progressToken: token, progress: 0, total: 1, message: 'working…' });
       callTool(name, params && params.arguments)
         .then((r) => reply(id, { content: [{ type: 'text', text: JSON.stringify(r, null, 2) }], structuredContent: r }))
-        .catch((e) => reply(id, { content: [{ type: 'text', text: 'Ошибка: ' + e.message }], isError: true }));
+        .catch((e) => reply(id, { content: [{ type: 'text', text: 'Error: ' + e.message }], isError: true }));
       break;
     }
     case 'ping':
       if (id != null) reply(id, {});
       break;
     default:
-      if (id != null) replyErr(id, -32601, 'метод не поддерживается: ' + method);
+      if (id != null) replyErr(id, -32601, 'method not supported: ' + method);
   }
 });
 process.on('disconnect', () => process.exit(0));

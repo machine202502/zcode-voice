@@ -1,10 +1,10 @@
 {
-  "name": "zcode-voice",
+  "name": "dev-zcode-voice",
   "plugins": [
     {
       "name": "zcode-voice",
       "source": ".",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "description": "Голосовой ввод ZCode: панель Voice (App plugins). Запись ведёт серверная часть плагина (ffmpeg), панель показывает прогресс и редактируемый текст; повторные записи дописываются. Офлайн-распознавание GigaAM v3.",
       "displayName": "ZCode Voice",
       "category": "productivity"
